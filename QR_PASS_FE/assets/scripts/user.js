@@ -12,7 +12,7 @@ document.querySelectorAll('.tab').forEach(tab => {
 });
 
 // API base URL
-const API_BASE_URL = 'http://localhost:4000/api';
+const API_BASE_URL = 'https://qr-pass-system-prod-be.onrender.com/api';
 
 // Registration
 document.getElementById('registerBtn').addEventListener('click', registerStudent);
