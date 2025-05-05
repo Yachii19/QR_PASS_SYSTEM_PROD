@@ -1,7 +1,7 @@
 import alertPopup from "./utils/alert.js";
 
 // API base URL
-const API_BASE_URL = 'https://qr-pass-system-prod-be.onrender.com/api';
+const API_BASE_URL = 'http://localhost:4000/api';
 let adminToken = null;
 let currentEditingCourseId = null;
 let currentDeletingCourseId = null;
@@ -158,6 +158,33 @@ async function loadAdminCourses() {
         console.error('Load courses error:', error);
         showStatusMessage('courseStatus', 'Failed to load courses', false);
     }
+}
+
+// Generate random encryption key
+document.getElementById('generateKeyBtn').addEventListener('click', generateRandomKey);
+
+function generateRandomKey() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>?';
+    let key = '';
+    
+    // Generate a 32-character key (you can adjust length as needed)
+    for (let i = 0; i < 32; i++) {
+        key += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    
+    document.getElementById('courseKey').value = key;
+    
+    // Show a brief success message
+    const keyInputContainer = document.querySelector('.key-input-container');
+    const successMsg = document.createElement('div');
+    successMsg.className = 'key-success-message';
+    successMsg.innerHTML = '<i class="fa-solid fa-check"></i> Key generated';
+    keyInputContainer.appendChild(successMsg);
+    
+    // Remove the message after 2 seconds
+    setTimeout(() => {
+        successMsg.remove();
+    }, 2000);
 }
 
 // Update course pagination UI
@@ -952,6 +979,190 @@ function resetVerification() {
     document.getElementById('verificationResult').classList.add('hidden');
     document.getElementById('verificationMessage').innerHTML = '';
     document.getElementById('verifyCourse').value = '';
+}
+
+// Clear attendance records
+document.getElementById('clearAttendanceBtn').addEventListener('click', () => {
+    const date = document.getElementById('filterDate').value;
+    const course = document.getElementById('filterCourse').value;
+    
+    // Create confirmation message based on filters
+    let message = 'Are you sure you want to clear ALL attendance records?';
+    
+    if (date || course) {
+        message = 'Are you sure you want to clear attendance records for ';
+        if (date) message += `date: ${date}`;
+        if (date && course) message += ' and ';
+        if (course) message += `course: ${course}`;
+        message += '?';
+    }
+    
+    // Create confirmation modal
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Confirm Clear Attendance</h2>
+                <button class="close-modal">&times;</button>
+            </div>
+            <p>${message}</p>
+            <p class="warning-text"><i class="fa-solid fa-triangle-exclamation"></i> This action cannot be undone!</p>
+            <div class="modal-actions">
+                <button id="confirmClearBtn" class="danger-btn">Clear Records</button>
+                <button id="cancelClearBtn" class="primary-btn">Cancel</button>
+            </div>
+            <div id="clearStatus" class="status-message hidden"></div>
+        </div>
+    `;
+    
+    document.body.appendChild(modal);
+    document.body.classList.add("modal-open");
+    modal.style.display = "flex";
+    
+    // Close modal handlers
+    const closeModal = () => {
+        document.body.classList.remove("modal-open");
+        modal.remove();
+    };
+    
+    modal.querySelector('.close-modal').addEventListener('click', closeModal);
+    modal.querySelector('#cancelClearBtn').addEventListener('click', closeModal);
+    
+    // Handle outside click
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) {
+            closeModal();
+        }
+    });
+    
+    // Handle clear confirmation
+    modal.querySelector('#confirmClearBtn').addEventListener('click', async () => {
+        const clearBtn = modal.querySelector('#confirmClearBtn');
+        const originalText = clearBtn.innerHTML;
+        clearBtn.disabled = true;
+        clearBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Clearing...';
+        
+        const statusDiv = modal.querySelector('#clearStatus');
+        
+        try {
+            const response = await fetch(`${API_BASE_URL}/attendance`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${adminToken}`
+                },
+                body: JSON.stringify({
+                    date: document.getElementById('filterDate').value,
+                    course: document.getElementById('filterCourse').value
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (response.ok) {
+                statusDiv.textContent = data.message || 'Attendance records cleared successfully';
+                statusDiv.className = 'status-message success-message';
+                
+                // Refresh attendance records after a short delay
+                setTimeout(() => {
+                    fetchAttendances();
+                    closeModal();
+                }, 1500);
+            } else {
+                throw new Error(data.error || 'Failed to clear attendance records');
+            }
+        } catch (error) {
+            console.error('Clear attendance error:', error);
+            statusDiv.textContent = error.message;
+            statusDiv.className = 'status-message error-message';
+        } finally {
+            clearBtn.disabled = false;
+            clearBtn.innerHTML = originalText;
+        }
+    });
+});
+
+// Download PDF button
+document.getElementById('downloadPdfBtn').addEventListener('click', downloadAttendancePDF);
+
+async function downloadAttendancePDF() {
+    const date = document.getElementById('filterDate').value;
+    const course = document.getElementById('filterCourse').value;
+    
+    try {
+        // Show loading state
+        const downloadBtn = document.getElementById('downloadPdfBtn');
+        const originalText = downloadBtn.innerHTML;
+        downloadBtn.disabled = true;
+        downloadBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generating PDF...';
+        
+        // Build query parameters
+        const params = new URLSearchParams();
+        if (date) params.append('date', date);
+        if (course) params.append('course', course);
+        
+        // Make the request
+        const response = await fetch(`${API_BASE_URL}/attendance/pdf?${params.toString()}`, {
+            headers: {
+                'Authorization': `Bearer ${adminToken}`
+            }
+        });
+        
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || 'Failed to generate PDF');
+        }
+        
+        // Create blob from response
+        const blob = await response.blob();
+        
+        // Create download link
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        
+        // Set filename from content-disposition header or generate one
+        let filename = 'Attendance_Records.pdf';
+        const contentDisposition = response.headers.get('content-disposition');
+        if (contentDisposition) {
+            const filenameMatch = contentDisposition.match(/filename="(.+)"/);
+            if (filenameMatch) filename = filenameMatch[1];
+        }
+        
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        
+        // Clean up
+        window.URL.revokeObjectURL(url);
+        a.remove();
+        
+    } catch (error) {
+        console.error('PDF download error:', error);
+        
+        if (error.message.includes('No attendance records')) {
+            // Show empty records modal
+            const modal = document.getElementById('emptyRecordModal');
+            modal.style.display = 'flex';
+            document.body.classList.add("modal-open");
+            
+            // Close modal handler
+            document.getElementById('closeEmptyModalBtn').addEventListener('click', () => {
+                modal.style.display = 'none';
+                document.body.classList.remove("modal-open");
+            }, { once: true });
+        } else {
+            alertPopup(error.message || 'Failed to download PDF');
+        }
+    } finally {
+        // Reset button state
+        const downloadBtn = document.getElementById('downloadPdfBtn');
+        if (downloadBtn) {
+            downloadBtn.disabled = false;
+            downloadBtn.innerHTML = '<i class="fa-solid fa-file-pdf"></i> Download PDF';
+        }
+    }
 }
 
 // Add CSS for loading overlay

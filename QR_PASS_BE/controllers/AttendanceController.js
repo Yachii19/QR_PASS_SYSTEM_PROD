@@ -2,6 +2,8 @@ const Attendance = require('../models/Attendance');
 const Student = require('../models/Student');
 const Course = require('../models/Course');
 const CryptoJS = require('crypto-js');
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
 const { errorResponse } = require('../utils/responses');
 
 exports.verifyQR = async (req, res) => {
@@ -232,5 +234,185 @@ exports.getAttendances = async (req, res) => {
     } catch (error) {
         console.error('Get attendances error:', error);
         errorResponse(res, 500, 'Failed to fetch attendances');
+    }
+};
+
+exports.clearAttendances = async (req, res) => {
+    try {
+        const { date, course } = req.body;
+        
+        let query = {};
+        if (date) { 
+            const startDate = new Date(date);
+            startDate.setHours(0, 0, 0, 0);
+            const endDate = new Date(date);
+            endDate.setHours(23, 59, 59, 999);
+            query.date_in = { $gte: startDate, $lte: endDate };
+        }
+        
+        if (course) {
+            const courseObj = await Course.findOne({ name: course });
+            if (courseObj) {
+                const students = await Student.find({ course_id: courseObj._id });
+                query.student_id = { $in: students.map(s => s._id) };
+            }
+        }
+        
+        const result = await Attendance.deleteMany(query);
+        
+        res.json({
+            success: true,
+            message: `Deleted ${result.deletedCount} attendance records`,
+            deletedCount: result.deletedCount
+        });
+    } catch (error) {
+        console.error('Clear attendances error:', error);
+        errorResponse(res, 500, 'Failed to clear attendance records');
+    }
+};
+
+exports.generateAttendancePDF = async (req, res) => {
+    try {
+        const { date, course } = req.query;
+        
+        let query = {};
+        if (date) { 
+            const startDate = new Date(date);
+            startDate.setHours(0, 0, 0, 0);
+            const endDate = new Date(date);
+            endDate.setHours(23, 59, 59, 999);
+            query.date_in = { $gte: startDate, $lte: endDate };
+        }
+        
+        if (course) {
+            const courseObj = await Course.findOne({ name: course });
+            if (courseObj) {
+                const students = await Student.find({ course_id: courseObj._id });
+                query.student_id = { $in: students.map(s => s._id) };
+            }
+        }
+        
+        const attendances = await Attendance.find(query)
+            .populate({
+                path: 'student_id',
+                select: 'student_id name course_id',
+                populate: {
+                    path: 'course_id',
+                    select: 'name'
+                }
+            })
+            .sort({ date_in: -1, time_in: -1 });
+
+        if (attendances.length === 0) {
+            return res.status(404).json({ error: 'No attendance records found for the selected filters' });
+        }
+
+        // Create a PDF document
+        const doc = new PDFDocument({ margin: 50 });
+        
+        // Set response headers
+        res.setHeader('Content-Type', 'application/pdf');
+        
+        // Generate filename based on filters
+        let filename = 'Attendance_Records';
+        if (date) filename += `_${date.replace(/-/g, '')}`;
+        if (course) filename += `_${course.replace(/\s+/g, '_')}`;
+        filename += '.pdf';
+        
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        
+        // Pipe the PDF to the response
+        doc.pipe(res);
+        
+        // Add header
+        doc.fontSize(20).text('Attendance Records', { align: 'center' });
+        doc.moveDown();
+        
+        // Add filters info
+        doc.fontSize(12);
+        if (date) doc.text(`Date: ${date}`);
+        if (course) doc.text(`Course: ${course}`);
+        doc.moveDown();
+        
+        // Add generated at timestamp
+        doc.text(`Generated at: ${new Date().toLocaleString()}`);
+        doc.moveDown(2);
+        
+        // Create table headers
+        const headers = ['Student ID', 'Name', 'Course', 'Time In', 'Time Out', 'Date'];
+        const columnWidths = [80, 120, 100, 80, 80, 80];
+        const rowHeight = 20;
+        
+        // Set initial position
+        let y = doc.y;
+        
+        // Draw table headers
+        doc.font('Helvetica-Bold');
+        headers.forEach((header, i) => {
+            doc.text(header, 50 + columnWidths.slice(0, i).reduce((a, b) => a + b, 0), y, {
+                width: columnWidths[i],
+                align: 'left'
+            });
+        });
+        
+        // Draw horizontal line
+        doc.moveTo(50, y + rowHeight)
+           .lineTo(50 + columnWidths.reduce((a, b) => a + b, 0), y + rowHeight)
+           .stroke();
+        
+        y += rowHeight;
+        doc.font('Helvetica');
+        
+        // Add attendance data
+        attendances.forEach(att => {
+            if (!att.student_id) return;
+            
+            const courseName = att.student_id.course_id?.name || 'Unknown Course';
+            const timeOut = att.time_out ? new Date(att.time_out).toLocaleTimeString() : 'N/A';
+            
+            const rowData = [
+                att.student_id.student_id,
+                att.student_id.name,
+                courseName,
+                new Date(att.time_in).toLocaleTimeString(),
+                timeOut,
+                new Date(att.date_in).toLocaleDateString()
+            ];
+            
+            // Check if we need a new page
+            if (y + rowHeight > doc.page.height - 50) {
+                doc.addPage();
+                y = 50;
+                
+                // Redraw headers on new page
+                doc.font('Helvetica-Bold');
+                headers.forEach((header, i) => {
+                    doc.text(header, 50 + columnWidths.slice(0, i).reduce((a, b) => a + b, 0), y, {
+                        width: columnWidths[i],
+                        align: 'left'
+                    });
+                });
+                
+                y += rowHeight;
+                doc.font('Helvetica');
+            }
+            
+            // Draw row data
+            rowData.forEach((cell, i) => {
+                doc.text(cell, 50 + columnWidths.slice(0, i).reduce((a, b) => a + b, 0), y, {
+                    width: columnWidths[i],
+                    align: 'left'
+                });
+            });
+            
+            y += rowHeight;
+        });
+        
+        // Finalize the PDF
+        doc.end();
+        
+    } catch (error) {
+        console.error('PDF generation error:', error);
+        res.status(500).json({ error: 'Failed to generate PDF' });
     }
 };
